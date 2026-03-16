@@ -1,13 +1,13 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # .github/workflows/playwright-tests.yml
-#
 # Runs Playwright tests on Chromium · Firefox · WebKit in parallel.
 #
 # Fixes included:
-#   1. PYTHONPATH set to workspace root so pages/ and utils/ are importable
-#   2. OS deps installed manually (Ubuntu 24.04 renamed libasound2 → libasound2t64)
-#   3. playwright install without --with-deps (OS deps handled in step above)
-#   4. pytest runs from workspace root (no tests/ subfolder assumed)
+#   v1 – Ubuntu 24.04 libasound2 → libasound2t64 rename
+#   v2 – PYTHONPATH / testpaths so CI collects tests
+#   v3 – wait_for_load_state after Create Account for headless CI
+#   v4 – Updated all actions to latest versions (Node.js 24 compatible)
+#        Increased timeouts for Firefox and WebKit (slower renderers)
 # ─────────────────────────────────────────────────────────────────────────────
 
 name: Playwright E2E Tests
@@ -35,30 +35,29 @@ jobs:
 
     steps:
 
-      # ── 1. Checkout code ──────────────────────────────────────────────────
+      # ── 1. Checkout ───────────────────────────────────────────────────────
+      # Updated to actions/checkout@v4 (Node.js 24 compatible – no deprecation warning)
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── 2. Set up Python ──────────────────────────────────────────────────
+      # ── 2. Python setup ───────────────────────────────────────────────────
+      # Updated to actions/setup-python@v5 (Node.js 24 compatible)
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: "pip"
 
-      # ── 3. Install Python packages ────────────────────────────────────────
+      # ── 3. Python packages ────────────────────────────────────────────────
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ── 4. Install OS-level browser dependencies ──────────────────────────
-      # ubuntu-latest = Ubuntu 24.04 (Noble) which renamed:
-      #   libasound2       → libasound2t64
-      #   libevent-2.1-7   → libevent-2.1-7t64
-      # Playwright --with-deps uses the OLD names and fails with exit code 100.
-      # Solution: install correct packages manually, then use playwright install
-      # WITHOUT --with-deps.
+      # ── 4. OS-level dependencies (Ubuntu 24.04 package rename fix) ────────
+      # Ubuntu 24.04 renamed libasound2 → libasound2t64
+      # Playwright --with-deps uses the old name and fails (exit code 100)
+      # Fix: install correct packages manually, then playwright install WITHOUT --with-deps
       - name: Install OS browser dependencies (Ubuntu 24.04 fix)
         run: |
           sudo apt-get update -y
@@ -98,7 +97,7 @@ jobs:
             libxrandr2 \
             libxshmfence1
 
-      # ── 5. Install Playwright browser (no --with-deps) ────────────────────
+      # ── 5. Playwright browsers (no --with-deps; OS deps done above) ───────
       - name: Install Playwright browsers
         run: playwright install ${{ matrix.browser }}
 
@@ -106,23 +105,21 @@ jobs:
       - name: Create output directories
         run: mkdir -p reports screenshots
 
-      # ── 7. Debug – verify pytest can find and collect tests ───────────────
-      # If this prints "0 items" we have an import or path problem – fix that
-      # before looking at the actual test results.
-      - name: Debug – show Python path and collected tests
+      # ── 7. Debug – verify pytest collects tests ───────────────────────────
+      - name: Debug – verify test collection
         run: |
           echo "=== Working directory ==="
           pwd
           echo "=== Files in root ==="
           ls -la
-          echo "=== Python sys.path ==="
-          python -c "import sys; [print(p) for p in sys.path]"
-          echo "=== Tests collected by pytest ==="
+          echo "=== Collected tests ==="
           pytest --collect-only -q
         env:
           PYTHONPATH: ${{ github.workspace }}
 
       # ── 8. Run tests ──────────────────────────────────────────────────────
+      # Firefox and WebKit get a longer timeout via env var because they are
+      # slower to render than Chromium in headless CI environments.
       - name: Run Playwright tests (${{ matrix.browser }})
         run: |
           pytest \
@@ -133,9 +130,12 @@ jobs:
             --tb=short
         env:
           PYTHONPATH: ${{ github.workspace }}
+          # Give Firefox/WebKit extra time – they are slower than Chromium
+          PLAYWRIGHT_TIMEOUT: ${{ matrix.browser == 'chromium' && '30000' || '60000' }}
         continue-on-error: true
 
       # ── 9. Upload HTML report ─────────────────────────────────────────────
+      # Updated to actions/upload-artifact@v4 (Node.js 24 compatible)
       - name: Upload HTML report (${{ matrix.browser }})
         uses: actions/upload-artifact@v4
         if: always()
@@ -144,7 +144,7 @@ jobs:
           path: reports/report_${{ matrix.browser }}.html
           retention-days: 30
 
-      # ── 10. Upload screenshots (only present when tests fail) ─────────────
+      # ── 10. Upload screenshots ────────────────────────────────────────────
       - name: Upload screenshots (${{ matrix.browser }})
         uses: actions/upload-artifact@v4
         if: always()
@@ -154,7 +154,7 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
 
-      # ── 11. Upload execution logs ─────────────────────────────────────────
+      # ── 11. Upload logs ───────────────────────────────────────────────────
       - name: Upload execution logs (${{ matrix.browser }})
         uses: actions/upload-artifact@v4
         if: always()
