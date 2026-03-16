@@ -1,0 +1,112 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# .github/workflows/playwright-tests.yml
+#
+# CI pipeline: runs Playwright tests across Chromium, Firefox, and WebKit,
+# then uploads HTML reports and failure screenshots as artifacts.
+#
+# Triggers:
+#   • Every push to main / master
+#   • Every pull request targeting main / master
+#   • Manual trigger (workflow_dispatch) – useful for ad-hoc runs
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Playwright E2E Tests
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:        # Allow manual trigger from the Actions tab
+
+# ── Global environment variables ─────────────────────────────────────────────
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────────────
+  # One job per browser – runs in parallel on separate GitHub-hosted runners
+  # ──────────────────────────────────────────────────────────────────────────
+  test:
+    name: "Tests – ${{ matrix.browser }}"
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false          # Don't cancel other browsers if one fails
+      matrix:
+        browser: [ chromium, firefox, webkit ]
+
+    steps:
+
+      # ── 1. Check out source code ──────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Set up Python ──────────────────────────────────────────────────
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"          # Cache pip dependencies between runs
+
+      # ── 3. Install Python dependencies ───────────────────────────────────
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ── 4. Install Playwright browsers ───────────────────────────────────
+      #     --with-deps installs OS-level libraries (fonts, codecs, etc.)
+      - name: Install Playwright browsers
+        run: playwright install --with-deps ${{ matrix.browser }}
+
+      # ── 5. Create required output directories ────────────────────────────
+      - name: Create output directories
+        run: |
+          mkdir -p reports screenshots
+
+      # ── 6. Run tests for this browser ─────────────────────────────────────
+      #    • --browser         : tells pytest-playwright which browser to use
+      #    • --html            : generate a per-browser HTML report
+      #    • --self-contained-html : embed all CSS/JS in a single .html file
+      #    • -n auto           : (optional) parallel execution via pytest-xdist
+      - name: Run Playwright tests (${{ matrix.browser }})
+        run: |
+          pytest tests/ \
+            --browser=${{ matrix.browser }} \
+            --html=reports/report_${{ matrix.browser }}.html \
+            --self-contained-html \
+            -v \
+            --tb=short
+        continue-on-error: true   # Upload artifacts even when tests fail
+
+      # ── 7. Upload HTML report ─────────────────────────────────────────────
+      - name: Upload HTML report (${{ matrix.browser }})
+        uses: actions/upload-artifact@v4
+        if: always()              # Run even when the test step fails
+        with:
+          name: html-report-${{ matrix.browser }}
+          path: reports/report_${{ matrix.browser }}.html
+          retention-days: 30      # Keep artifact for 30 days
+
+      # ── 8. Upload failure screenshots ────────────────────────────────────
+      - name: Upload screenshots (${{ matrix.browser }})
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshots-${{ matrix.browser }}
+          path: screenshots/
+          retention-days: 30
+          # Don't fail the workflow if the screenshots folder is empty
+          # (no failures means no screenshots)
+          if-no-files-found: ignore
+
+      # ── 9. Upload execution log ───────────────────────────────────────────
+      - name: Upload execution log (${{ matrix.browser }})
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: execution-log-${{ matrix.browser }}
+          path: reports/
+          retention-days: 30
+          if-no-files-found: ignore

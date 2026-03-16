@@ -1,0 +1,21 @@
+# ─────────────────────────────────────────────
+# Core dependencies for Playwright + Pytest framework
+# ─────────────────────────────────────────────
+
+# Playwright for Python – browser automation
+playwright==1.43.0
+
+# Pytest – test runner
+pytest==8.2.0
+
+# Pytest-Playwright – official plugin (fixtures, browser management)
+pytest-playwright==0.5.0
+
+# pytest-html – generates a styled HTML report after each run
+pytest-html==4.1.1
+
+# pytest-metadata – adds metadata (browser, OS, etc.) to the HTML report
+pytest-metadata==3.0.0
+
+# Faker – generate realistic random test data (e.g. unique emails)
+Faker==25.0.0
