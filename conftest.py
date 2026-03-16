@@ -1,157 +1,108 @@
 """
 conftest.py  (root level)
 ──────────────────────────
-Pytest configuration & shared fixtures for the entire test suite.
+Pytest configuration and shared fixtures.
 
-What lives here:
-  • CLI option to choose browser (--browser-name)
-  • ``browser_context_args`` fixture – sets viewport, slow-mo, etc.
-  • ``page`` fixture – creates a browser page, yields it, captures a
-    screenshot on failure, then tears down
-  • ``html_report_path`` fixture – builds a per-browser HTML report path
-  • Hooks: pytest_configure, pytest_runtest_makereport
+Key fix (v4):
+  The previous version defined a custom `page` fixture that conflicted
+  with pytest-playwright's built-in `page` fixture on Firefox and WebKit,
+  causing "BrowserContext.new_page: Target page, context or browser has
+  been closed" errors.
 
-The pytest-playwright plugin registers ``playwright``, ``browser_type``,
-``browser``, and ``context`` fixtures automatically – we build on top of those.
+  Fix: Remove the custom page fixture entirely.
+  pytest-playwright manages the browser/context/page lifecycle correctly.
+  Screenshot-on-failure is handled via pytest_runtest_makereport hook
+  using the `request` object inside the test, NOT by wrapping the page fixture.
 """
 
 import os
 import pytest
 
-from utils.helpers import capture_screenshot
 from utils.logger import get_logger
 
 logger = get_logger("conftest")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# pytest_configure hook – creates required output directories early
+# pytest_configure – create output folders before the first test
 # ─────────────────────────────────────────────────────────────────────────────
 
 def pytest_configure(config):
-    """Create output directories before the first test runs."""
+    """Create output directories before any test runs."""
     os.makedirs("reports", exist_ok=True)
     os.makedirs("screenshots", exist_ok=True)
     logger.info("Output directories ready: reports/ and screenshots/")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Add a custom --browser-name CLI option so we can run per-browser from CI
-# ─────────────────────────────────────────────────────────────────────────────
-
-def pytest_addoption(parser):
-    """
-    pytest-playwright already registers --browser, but we expose a convenience
-    alias ``--browser-name`` that our GitHub Actions matrix passes in.
-    """
-    parser.addoption(
-        "--browser-name",
-        action="store",
-        default=None,
-        help="Override browser for this run: chromium | firefox | webkit",
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# browser_context_args fixture – shared browser context settings
+# browser_context_args – shared viewport / context settings
 # ─────────────────────────────────────────────────────────────────────────────
 
 @pytest.fixture(scope="session")
 def browser_context_args(browser_context_args):
     """
-    Extend the default browser-context arguments provided by pytest-playwright.
-
-    Sets:
-      • viewport size  – 1366×768 (common laptop resolution)
-      • ignore_https_errors – avoids failures on self-signed certs
-      • record_video_dir – (commented out; enable if you want video artifacts)
+    Extend pytest-playwright's default browser context arguments.
+    Sets viewport to a standard laptop resolution and ignores HTTPS errors.
     """
     return {
         **browser_context_args,
         "viewport": {"width": 1366, "height": 768},
         "ignore_https_errors": True,
-        # "record_video_dir": "reports/videos/",  # ← uncomment to record
     }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# page fixture – with automatic screenshot on failure
-# ─────────────────────────────────────────────────────────────────────────────
-
-@pytest.fixture()
-def page(context, request):
-    """
-    Provide a Playwright Page object and capture a screenshot if the test fails.
-
-    Playwright's ``context`` fixture (provided by pytest-playwright) creates
-    a fresh BrowserContext per test – so each test starts with clean cookies
-    and storage (no cross-test contamination).
-
-    Yield:
-        playwright.sync_api.Page
-    """
-    page = context.new_page()
-    yield page
-
-    # ── Teardown ──────────────────────────────────────────────────────────────
-    # Check if the test that used this page fixture failed
-    # ``request.node`` is the test item; we inspect the call phase report
-    # that was attached by the hook below.
-    report = getattr(request.node, "_playwright_report", None)
-    if report and report.failed:
-        browser_name = request.node.callargs.get("browser_name", "unknown") \
-            if hasattr(request.node, "callargs") else "unknown"
-        # Fallback: read from the pytest-playwright browser fixture value
-        try:
-            browser_name = page.context.browser.browser_type.name
-        except Exception:
-            pass
-
-        screenshot_path = capture_screenshot(
-            page, request.node.nodeid, browser_name
-        )
-        logger.warning("Test FAILED – screenshot saved to %s", screenshot_path)
-
-        # Attach screenshot to the HTML report (pytest-html extra)
-        extras = getattr(report, "extras", [])
-        try:
-            from pytest_html import extras as html_extras  # type: ignore
-            extras.append(html_extras.image(screenshot_path))
-            report.extras = extras
-        except ImportError:
-            pass  # pytest-html not installed – skip attachment
-
-    page.close()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Hook: attach report object to the test node for use in the page fixture
+# Hook: capture screenshot on test failure
 # ─────────────────────────────────────────────────────────────────────────────
 
 @pytest.hookimpl(tryfirst=True, hookwrapper=True)
 def pytest_runtest_makereport(item, call):
     """
-    After each test phase (setup / call / teardown), attach the report to the
-    test node so the ``page`` fixture can check whether the test failed.
+    After the test CALL phase, if the test failed:
+      1. Capture a full-page screenshot using the `page` fixture value
+      2. Attach it to the HTML report via pytest-html extras
+      3. Log the screenshot path
+
+    This approach does NOT wrap the page fixture, so it is fully compatible
+    with pytest-playwright's internal browser/context/page lifecycle on all
+    three browsers (Chromium, Firefox, WebKit).
     """
     outcome = yield
     report = outcome.get_result()
 
-    # We only care about the test body phase (not setup/teardown)
-    if call.when == "call":
-        item._playwright_report = report
+    # Only act on the test body phase (not setup/teardown)
+    if call.when == "call" and report.failed:
 
+        # Get the `page` object from the test's fixture values
+        page = item.funcargs.get("page")
+        if page is None:
+            return
 
-# ─────────────────────────────────────────────────────────────────────────────
-# html_report_path fixture – per-browser report file path
-# ─────────────────────────────────────────────────────────────────────────────
+        # Build a safe filename
+        from datetime import datetime
+        browser_name = "unknown"
+        try:
+            browser_name = page.context.browser.browser_type.name
+        except Exception:
+            pass
 
-@pytest.fixture(scope="session")
-def html_report_path(request):
-    """
-    Return the path where the HTML report for this session should be written.
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_name = item.nodeid.replace("::", "_").replace("/", "_").replace("\\", "_")
+        screenshot_path = f"screenshots/{browser_name}_{safe_name}_{timestamp}.png"
 
-    pytest-html is configured via the ``--html`` CLI option; this fixture
-    exposes the path so tests can log it.
-    """
-    return request.config.getoption("--html", default="reports/report.html")
+        # Take screenshot
+        try:
+            page.screenshot(path=screenshot_path, full_page=True)
+            logger.warning("Test FAILED – screenshot saved to %s", screenshot_path)
+        except Exception as e:
+            logger.error("Could not capture screenshot: %s", e)
+            return
+
+        # Attach to pytest-html report
+        try:
+            from pytest_html import extras as html_extras
+            extra = getattr(report, "extras", [])
+            extra.append(html_extras.image(screenshot_path))
+            report.extras = extra
+        except Exception:
+            pass  # pytest-html not installed or extras unavailable
