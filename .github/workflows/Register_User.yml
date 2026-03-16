@@ -1,16 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # .github/workflows/playwright-tests.yml
-#
-# CI pipeline: Chromium · Firefox · WebKit in parallel
-#
-# ── Ubuntu 24.04 FIX ─────────────────────────────────────────────────────────
-# ubuntu-latest = Ubuntu 24.04 (Noble).  Ubuntu 24.04 renamed:
-#     libasound2  →  libasound2t64
-# Playwright's --with-deps still uses the OLD name → "no installation candidate"
-#
-# Solution:
-#   Step 4a – manually install OS libs using the correct Ubuntu 24.04 names
-#   Step 4b – run  playwright install <browser>  WITHOUT  --with-deps
 # ─────────────────────────────────────────────────────────────────────────────
 
 name: Playwright E2E Tests
@@ -24,6 +13,8 @@ on:
 
 env:
   PYTHON_VERSION: "3.11"
+  # ── Critical: ensures Python can find pages/, utils/, etc. in CI ──────────
+  PYTHONPATH: ${{ github.workspace }}
 
 jobs:
   test:
@@ -54,7 +45,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ── 4a. OS-level dependencies (Ubuntu 24.04 correct package names) ────
+      # ── 4a. OS-level dependencies (Ubuntu 24.04 package rename fix) ───────
+      # ubuntu-latest = Ubuntu 24.04 (Noble). It renamed:
+      #   libasound2  →  libasound2t64
+      #   libevent-2.1-7  →  libevent-2.1-7t64
+      # Playwright's --with-deps still uses the OLD names and fails.
+      # Fix: install OS deps manually with correct names, then install
+      # browsers WITHOUT --with-deps.
       - name: Install OS browser dependencies (Ubuntu 24.04 fix)
         run: |
           sudo apt-get update -y
@@ -94,15 +91,27 @@ jobs:
             libxrandr2 \
             libxshmfence1
 
-      # ── 4b. Playwright browsers – NO --with-deps (already installed above) ─
+      # ── 4b. Playwright browsers (no --with-deps; OS deps done above) ──────
       - name: Install Playwright browsers
         run: playwright install ${{ matrix.browser }}
 
-      # ── 5. Create output dirs ─────────────────────────────────────────────
+      # ── 5. Create output directories ──────────────────────────────────────
       - name: Create output directories
         run: mkdir -p reports screenshots
 
-      # ── 6. Run tests ──────────────────────────────────────────────────────
+      # ── 6. Verify test collection BEFORE running (debug helper) ───────────
+      # If this step shows "0 tests collected" we know it is a path/import
+      # issue rather than a test logic failure.
+      - name: Verify pytest collects tests
+        run: |
+          echo "=== Python path ==="
+          python -c "import sys; [print(p) for p in sys.path]"
+          echo "=== Collected tests ==="
+          pytest tests/ --collect-only -q
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+
+      # ── 7. Run tests ──────────────────────────────────────────────────────
       - name: Run Playwright tests (${{ matrix.browser }})
         run: |
           pytest tests/ \
@@ -111,9 +120,11 @@ jobs:
             --self-contained-html \
             -v \
             --tb=short
+        env:
+          PYTHONPATH: ${{ github.workspace }}
         continue-on-error: true
 
-      # ── 7. Upload HTML report ─────────────────────────────────────────────
+      # ── 8. Upload HTML report ─────────────────────────────────────────────
       - name: Upload HTML report (${{ matrix.browser }})
         uses: actions/upload-artifact@v4
         if: always()
@@ -122,7 +133,7 @@ jobs:
           path: reports/report_${{ matrix.browser }}.html
           retention-days: 30
 
-      # ── 8. Upload screenshots (failures only) ─────────────────────────────
+      # ── 9. Upload screenshots (only present on failure) ───────────────────
       - name: Upload screenshots (${{ matrix.browser }})
         uses: actions/upload-artifact@v4
         if: always()
@@ -132,7 +143,7 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
 
-      # ── 9. Upload logs ────────────────────────────────────────────────────
+      # ── 10. Upload logs ───────────────────────────────────────────────────
       - name: Upload execution log (${{ matrix.browser }})
         uses: actions/upload-artifact@v4
         if: always()
