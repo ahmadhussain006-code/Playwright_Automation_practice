@@ -153,9 +153,17 @@ class RegistrationPage(BasePage):
     # ── Actions – Submit ──────────────────────────────────────────────────────
 
     def click_create_account(self) -> None:
-        """Click the 'Create Account' button."""
+        """
+        Click the 'Create Account' button and wait for navigation.
+
+        The explicit wait_for_load_state is critical for CI (headless):
+        without it, the next assertion fires before the browser has finished
+        navigating to the /account_created confirmation page.
+        """
         self.logger.info("Clicking 'Create Account' button")
         self.click(self.CREATE_ACCOUNT_BUTTON)
+        # Wait until DOM is ready on the confirmation page
+        self.page.wait_for_load_state("domcontentloaded")
 
     # ── Composite convenience method ──────────────────────────────────────────
 
