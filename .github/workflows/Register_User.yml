@@ -1,13 +1,16 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # .github/workflows/playwright-tests.yml
 #
-# CI pipeline: runs Playwright tests across Chromium, Firefox, and WebKit,
-# then uploads HTML reports and failure screenshots as artifacts.
+# CI pipeline: Chromium · Firefox · WebKit in parallel
 #
-# Triggers:
-#   • Every push to main / master
-#   • Every pull request targeting main / master
-#   • Manual trigger (workflow_dispatch) – useful for ad-hoc runs
+# ── Ubuntu 24.04 FIX ─────────────────────────────────────────────────────────
+# ubuntu-latest = Ubuntu 24.04 (Noble).  Ubuntu 24.04 renamed:
+#     libasound2  →  libasound2t64
+# Playwright's --with-deps still uses the OLD name → "no installation candidate"
+#
+# Solution:
+#   Step 4a – manually install OS libs using the correct Ubuntu 24.04 names
+#   Step 4b – run  playwright install <browser>  WITHOUT  --with-deps
 # ─────────────────────────────────────────────────────────────────────────────
 
 name: Playwright E2E Tests
@@ -17,59 +20,89 @@ on:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
-  workflow_dispatch:        # Allow manual trigger from the Actions tab
+  workflow_dispatch:
 
-# ── Global environment variables ─────────────────────────────────────────────
 env:
   PYTHON_VERSION: "3.11"
 
 jobs:
-  # ──────────────────────────────────────────────────────────────────────────
-  # One job per browser – runs in parallel on separate GitHub-hosted runners
-  # ──────────────────────────────────────────────────────────────────────────
   test:
     name: "Tests – ${{ matrix.browser }}"
     runs-on: ubuntu-latest
 
     strategy:
-      fail-fast: false          # Don't cancel other browsers if one fails
+      fail-fast: false
       matrix:
         browser: [ chromium, firefox, webkit ]
 
     steps:
 
-      # ── 1. Check out source code ──────────────────────────────────────────
+      # ── 1. Checkout ───────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── 2. Set up Python ──────────────────────────────────────────────────
+      # ── 2. Python setup ───────────────────────────────────────────────────
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: "pip"          # Cache pip dependencies between runs
+          cache: "pip"
 
-      # ── 3. Install Python dependencies ───────────────────────────────────
+      # ── 3. Python dependencies ────────────────────────────────────────────
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ── 4. Install Playwright browsers ───────────────────────────────────
-      #     --with-deps installs OS-level libraries (fonts, codecs, etc.)
-      - name: Install Playwright browsers
-        run: playwright install --with-deps ${{ matrix.browser }}
-
-      # ── 5. Create required output directories ────────────────────────────
-      - name: Create output directories
+      # ── 4a. OS-level dependencies (Ubuntu 24.04 correct package names) ────
+      - name: Install OS browser dependencies (Ubuntu 24.04 fix)
         run: |
-          mkdir -p reports screenshots
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            libasound2t64 \
+            libgstreamer1.0-0 \
+            libgstreamer-plugins-base1.0-0 \
+            libwoff1 \
+            libvpx9 \
+            libevent-2.1-7t64 \
+            libopus0 \
+            libharfbuzz-icu0 \
+            libhyphen0 \
+            libmanette-0.2-0 \
+            libflite1 \
+            gstreamer1.0-plugins-bad \
+            libgles2 \
+            libenchant-2-2 \
+            libsecret-1-0 \
+            libnotify4 \
+            xvfb \
+            fonts-liberation \
+            libatk-bridge2.0-0 \
+            libatk1.0-0 \
+            libcups2 \
+            libdbus-1-3 \
+            libdrm2 \
+            libgbm1 \
+            libgtk-3-0 \
+            libnspr4 \
+            libnss3 \
+            libpango-1.0-0 \
+            libxcomposite1 \
+            libxdamage1 \
+            libxfixes3 \
+            libxkbcommon0 \
+            libxrandr2 \
+            libxshmfence1
 
-      # ── 6. Run tests for this browser ─────────────────────────────────────
-      #    • --browser         : tells pytest-playwright which browser to use
-      #    • --html            : generate a per-browser HTML report
-      #    • --self-contained-html : embed all CSS/JS in a single .html file
-      #    • -n auto           : (optional) parallel execution via pytest-xdist
+      # ── 4b. Playwright browsers – NO --with-deps (already installed above) ─
+      - name: Install Playwright browsers
+        run: playwright install ${{ matrix.browser }}
+
+      # ── 5. Create output dirs ─────────────────────────────────────────────
+      - name: Create output directories
+        run: mkdir -p reports screenshots
+
+      # ── 6. Run tests ──────────────────────────────────────────────────────
       - name: Run Playwright tests (${{ matrix.browser }})
         run: |
           pytest tests/ \
@@ -78,18 +111,18 @@ jobs:
             --self-contained-html \
             -v \
             --tb=short
-        continue-on-error: true   # Upload artifacts even when tests fail
+        continue-on-error: true
 
       # ── 7. Upload HTML report ─────────────────────────────────────────────
       - name: Upload HTML report (${{ matrix.browser }})
         uses: actions/upload-artifact@v4
-        if: always()              # Run even when the test step fails
+        if: always()
         with:
           name: html-report-${{ matrix.browser }}
           path: reports/report_${{ matrix.browser }}.html
-          retention-days: 30      # Keep artifact for 30 days
+          retention-days: 30
 
-      # ── 8. Upload failure screenshots ────────────────────────────────────
+      # ── 8. Upload screenshots (failures only) ─────────────────────────────
       - name: Upload screenshots (${{ matrix.browser }})
         uses: actions/upload-artifact@v4
         if: always()
@@ -97,11 +130,9 @@ jobs:
           name: screenshots-${{ matrix.browser }}
           path: screenshots/
           retention-days: 30
-          # Don't fail the workflow if the screenshots folder is empty
-          # (no failures means no screenshots)
           if-no-files-found: ignore
 
-      # ── 9. Upload execution log ───────────────────────────────────────────
+      # ── 9. Upload logs ────────────────────────────────────────────────────
       - name: Upload execution log (${{ matrix.browser }})
         uses: actions/upload-artifact@v4
         if: always()
